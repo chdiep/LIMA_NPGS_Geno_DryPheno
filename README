@@ -1,0 +1,11 @@
+Scripts for Adaskaveg et al. (2026)
+Summary of contents:
+The AsREML_GxE_Herit directory contains scripts used for AsREML-R-based GxE and heritability analyses for seed traits and flowering time.
+The BoxCox directory contains scripts used for Box-Cox transformation for seed traits and flowering time.
+The GenomicPrediction_FT directory contains scripts used for genomic prediction (in four quadrants; tested and untested genotypes, and tested and untested environments) for flowering time.
+The GWAS directory contains scripts used for genome-wide association studies for descriptive traits, seed traits, and flowering time.
+The SpatialModelFitting directory contains scripts used for AsREML-R-based spatial model fitting for seed traits and flowering time, using likelihood ratio testing to determine the best residual structure.
+The statgenGxE_Herit directory contains scripts used for statgenGxE-based GxE and heritability analyses for seed traits and flowering time.
+NIRS-Calibration_lima.Rmd is the custom lima bean near-infrared spectroscopy calibration script used for grain macronutrients in dry seed (i.e., harvested from mature pods).
+Select_Samples_For_WetChem_Kennard_Stone.R is the script used to select which subset of samples scanned via near-infrared spectroscopy would be sent for wet-chemistry reference analyses.
+phenotypic_analysis_updated.R is the script used for phenotypic analyses.
