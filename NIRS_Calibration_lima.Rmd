@@ -1,0 +1,603 @@
+---
+title: Custom Lima Bean NIRS Calibration
+---
+
+
+```{r}
+#install.packages("prospectr")
+#install.packages("pls")
+#install.packages("ggfortify")
+#install.packages("emmeans")
+#install.packages("ggrepel")
+rm(list=ls())
+```
+
+Clear the environemnt and call libraries
+
+```{r}
+
+#install.packages("prospectr")
+#install.packages("pls")
+
+library(prospectr)
+library(pls)
+library(ggplot2)
+library(ggfortify)
+library(emmeans)
+library(dplyr)
+library(tidyr)
+library(ggrepel)
+library(tidyverse)
+
+```
+
+Note: if we are working on this together for version control, this will initially cause some issues! Best to find a common, accessible place to put a common dataset for testing.
+
+
+
+Before running, raw datasets exported from Foss need to:
+1) remove the second row of "Log(1/R)"
+2) Write "Wavelength" in cell A1
+3) Find and replace"sample no: " with ""
+4) Check consistency of names with wetchem and are unique after being cut off with SpectraGryph
+```{r}
+#Read in and transpose spectral data, and move wavelength IDs into column names
+##CA limas
+dat_spectral1 = read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/CA_lima/Full_Set1_Spectra_for_R.csv",head=T,check.names=F)
+##CF23
+dat_spectral2 = read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/spectra_CF_all_t.csv",head=T,check.names=F)
+##CVARS23
+dat_spectral3=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/CVARS_2023/nir_spectra_CVARS23_LIMAonly_formated_for_calibration_script.csv",head=T,check.names=F) #already transposed and formatted
+#Culinary
+dat_spectral4=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/Sensory-culinary/Spectra/nir_spectra_culinary_sensory_set_for.cal.csv",head=T,check.names=F)#names appended to be same as recorded in foss with spaces replaced (were cut off in spectragryph)#additional samples added
+##Davis24
+dat_spectral5=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/Davis_2024_SCRIDayNeutral/nirs_spectra_ucd2024_npgs_pretransposed.csv",head=T,check.names=F)
+##CVARS24
+dat_spectral6=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/CVARS_2024/NIRS/cvars2024_7-28-25_spectra.csv",head=T,check.names=F)
+##CF24
+dat_spectral7=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/Central_Ferry/2024_field/nir_spectra_CF2024.csv",head=T,check.names=F)
+##UCD25
+dat_spectral8=read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/Davis_2025/NIRS/ucd25_npgs_spectra_missing20.csv",head=T,check.names=F)
+dat_spectral_pretransp<-full_join(dat_spectral1,dat_spectral2, by = join_by(Wavelength))
+dat_spectral_pretransp2<-full_join(dat_spectral_pretransp,dat_spectral3, by = join_by(Wavelength))
+dat_spectral_pretransp3<-full_join(dat_spectral_pretransp2,dat_spectral4, by = join_by(Wavelength))
+dat_spectral_pretransp4<-full_join(dat_spectral_pretransp3,dat_spectral5, by = join_by(Wavelength))
+dat_spectral_pretransp5<-full_join(dat_spectral_pretransp4,dat_spectral6, by = join_by(Wavelength))
+dat_spectral_pretransp6<-full_join(dat_spectral_pretransp5,dat_spectral7, by = join_by(Wavelength))
+dat_spectral_pretransp7<-full_join(dat_spectral_pretransp6,dat_spectral8, by = join_by(Wavelength))
+dat_spectral_w.head = t(as.matrix(dat_spectral_pretransp7)) #includes wavelength header
+dim(dat_spectral_w.head)
+
+colnames(dat_spectral_w.head) = dat_spectral_w.head[1,] #sets wavelengths as column names
+dat_spectral = dat_spectral_w.head[-1,] #removes first row that had contained wavelengths
+
+```
+
+```{r}
+#Compute spectral pre-treatments
+
+# Standard Normal Variate (SNV) #corrects for multiplicative effects
+snv <- standardNormalVariate(dat_spectral)
+
+# Compute the first derivative using the Savitzky-Golay filter
+sg.1 <- savitzkyGolay(dat_spectral, p = 3, w = 11, m = 1)
+sg.2 <- savitzkyGolay(dat_spectral, p = 3, w = 11, m = 2)
+
+```
+
+
+```{r}
+#PCA on spectral data
+pc_res = prcomp(dat_spectral,scale=T)
+plot(pc_res)
+autoplot(pc_res,label=T,label.size=2)
+
+pc_res1 = prcomp(snv,scale=T)
+plot(pc_res1)
+autoplot(pc_res1,label=T,label.size=2)
+
+pc_res2 = prcomp(sg.1,scale=T)
+plot(pc_res2)
+autoplot(pc_res2,label=T,label.size=2)
+
+pc_res2 = prcomp(sg.2,scale=T)
+plot(pc_res2)
+autoplot(pc_res2,label=T,label.size=2)
+```
+
+```{r}
+#Calculate mahalanobis distance of spectra for outlier detection
+#no pretreatment
+cov_regularized <- cov(dat_spectral) + diag(0.0001, ncol(dat_spectral)) # Add a small value to the diagonal so matrix algebra is computable
+mahal_distances <- mahalanobis(dat_spectral, colMeans(dat_spectral), cov_regularized)
+
+#Visualize mahalanobis distance with 99.5th percentile
+perc_thresh <- quantile(mahal_distances, 0.995)
+hist(mahal_distances, main = "Mahalanobis Distances with 99th percentile threshold",
+     xlab = "Mahalanobis Distance", ylab = "Frequency", breaks = 30)
+abline(v = perc_thresh, col = "red", lty = 2)
+
+#snv
+cov_regularized1 <- cov(snv) + diag(0.0001, ncol(snv)) # Add a small value to the diagonal so matrix algebra is computable
+mahal_distances1 <- mahalanobis(snv, colMeans(snv), cov_regularized1)
+
+hist(mahal_distances1, main = "Mahalanobis Distances with 99th percentile threshold",
+     xlab = "Mahalanobis Distance", ylab = "Frequency", breaks = 30)
+abline(v = perc_thresh, col = "red", lty = 2)
+
+#sg1
+cov_regularized2 <- cov(sg.1) + diag(0.0001, ncol(sg.1)) # Add a small value to the diagonal so matrix algebra is computable
+mahal_distances2 <- mahalanobis(sg.1, colMeans(sg.1), cov_regularized2)
+
+hist(mahal_distances2, main = "Mahalanobis Distances with 99th percentile threshold",
+     xlab = "Mahalanobis Distance", ylab = "Frequency", breaks = 30)
+abline(v = perc_thresh, col = "red", lty = 2)
+
+#sg2
+cov_regularized3 <- cov(sg.2) + diag(0.0001, ncol(sg.2)) # Add a small value to the diagonal so matrix algebra is computable
+mahal_distances3 <- mahalanobis(sg.2, colMeans(sg.2), cov_regularized2)
+
+hist(mahal_distances3, main = "Mahalanobis Distances with 99th percentile threshold",
+     xlab = "Mahalanobis Distance", ylab = "Frequency", breaks = 30)
+abline(v = perc_thresh, col = "red", lty = 2)
+
+```
+
+```{r}
+#Choose 99th or 95th percentile
+#perc_thresh <- quantile(mahal_distances, 0.95)
+perc_thresh <- quantile(mahal_distances, 0.995)
+
+#Apply thresholds to subset data
+Mahal_outs_perc <- names(mahal_distances[mahal_distances > perc_thresh])
+n <- length(mahal_distances)
+
+#Report results
+cat("Percentage of data observed as outliers with Mahal Distance percentile approach: ", round(length(Mahal_outs_perc)/n *100,1), "%\n")
+cat("\nOutlier samples detected with Mahalanobis Distance Pecentile:\n\n" )
+cat(Mahal_outs_perc, sep = "\n")
+
+perc_thresh1 <- quantile(mahal_distances1, 0.995)
+Mahal_outs_perc1 <- names(mahal_distances1[mahal_distances1 > perc_thresh1])
+n <- length(mahal_distances1)
+cat("Percentage of data observed as outliers with Mahal Distance percentile approach: ", round(length(Mahal_outs_perc1)/n *100,1), "%\n")
+cat("\nOutlier samples detected with Mahalanobis Distance Pecentile:\n\n" )
+cat(Mahal_outs_perc1, sep = "\n")
+
+perc_thresh2 <- quantile(mahal_distances2, 0.995)
+Mahal_outs_perc2 <- names(mahal_distances2[mahal_distances2 > perc_thresh2])
+n <- length(mahal_distances2)
+cat("Percentage of data observed as outliers with Mahal Distance percentile approach: ", round(length(Mahal_outs_perc1)/n *100,1), "%\n")
+cat("\nOutlier samples detected with Mahalanobis Distance Pecentile:\n\n" )
+cat(Mahal_outs_perc2, sep = "\n")
+
+perc_thresh3 <- quantile(mahal_distances3, 0.995)
+Mahal_outs_perc3 <- names(mahal_distances3[mahal_distances3 > perc_thresh3])
+n <- length(mahal_distances3)
+cat("Percentage of data observed as outliers with Mahal Distance percentile approach: ", round(length(Mahal_outs_perc1)/n *100,1), "%\n")
+cat("\nOutlier samples detected with Mahalanobis Distance Pecentile:\n\n" )
+cat(Mahal_outs_perc3, sep = "\n")
+```
+
+```{r}
+#Remove outlier from spectral data and re-conduct PCA (for ease of viewing the remaining samples)
+dat_spectral_noOut = dat_spectral[-which(rownames(dat_spectral) %in% Mahal_outs_perc),]
+pc_res_noOut = prcomp(dat_spectral_noOut)
+plot(pc_res_noOut)
+autoplot(pc_res_noOut,label=T,label.size=2)
+```
+
+```{r}
+#Read in wet-chemistry data and assign sample IDs to row names (for ease of merging)
+dat_wetchem = read.csv("~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/Master_Wet_Chem_with_meta.csv",head=T,check.names=F,stringsAsFactors = T)
+
+str(dat_wetchem)
+rownames(dat_wetchem) = dat_wetchem$FossID
+```
+
+
+```{r}
+#PCA on wet-chemistry data; must remove lines with missing starch values (or conduct PCA on all traits except starch)
+#dat_wetchem_noMissing = dat_wetchem[-which(is.na(dat_wetchem$Starch_percent)),]
+pc_res_wetchem = prcomp(dat_wetchem[9:14])
+plot(pc_res_wetchem)
+autoplot(pc_res_wetchem,label=T,label.size=1.75,loadings=T,loadings.label=T,loadings.label.size=1.75,scale=T)
+```
+
+```{r}
+#Merge wet-chemistry and spectral data (in that order so that the wet-chem data can be easily viewed in first few columns of the merged object)
+#dat_wetchem_spectral = merge(dat_wetchem,dat_spectral,by='row.names')
+dat_wetchem_spectral= merge(dat_wetchem,dat_spectral_noOut,by = 'row.names') #if wanted to drop wetchem outliers #removed outliers from CVARS2024 spectra
+
+# Set row names and remove the extra column
+rownames(dat_wetchem_spectral) <- dat_wetchem_spectral$Row.names
+dat_wetchem_spectral <- dat_wetchem_spectral[, -1]
+#View(dat_wetchem_spectral[1:15,1:15])
+dim(dat_wetchem_spectral)
+
+#Adding in example for testing effect of pretreament during meeting 5/21/2024 (modified for sg2 and snv pretreatments of interest)
+dat_wetchem_spectral_sg.1 = merge(dat_wetchem,sg.1,by='row.names')
+dat_wetchem_spectral_sg.2 = merge(dat_wetchem,sg.2,by='row.names')
+dat_wetchem_spectral_snv = merge(dat_wetchem,snv,by='row.names')
+# Set row names and remove the extra column
+rownames(dat_wetchem_spectral_sg.1) <- dat_wetchem_spectral_sg.1$Row.names
+dat_wetchem_spectral_sg.1 <- dat_wetchem_spectral_sg.1[, -1]
+dim(dat_wetchem_spectral_sg.1)
+dat_wetchem_spectral_sg.1<-dat_wetchem_spectral_sg.1%>%dplyr::select(-AnLab_Order,-AnLab_Sample,-SCRI)
+dat_wetchem_spectral_sg.1<-dat_wetchem_spectral_sg.1%>%dplyr::select(-Var.22)
+
+rownames(dat_wetchem_spectral_sg.2) <- dat_wetchem_spectral_sg.2$Row.names
+dat_wetchem_spectral_sg.2 <- dat_wetchem_spectral_sg.2[, -1]
+#View(dat_wetchem_spectral_sg.2[1:15,1:15])
+dim(dat_wetchem_spectral_sg.2)
+dat_wetchem_spectral_sg.2<-dat_wetchem_spectral_sg.2%>%dplyr::select(-AnLab_Order,-AnLab_Sample,-SCRI)
+dat_wetchem_spectral_sg.2<-dat_wetchem_spectral_sg.2%>%dplyr::select(-Var.22)
+
+rownames(dat_wetchem_spectral_snv) <- dat_wetchem_spectral_snv$Row.names
+dat_wetchem_spectral_snv <- dat_wetchem_spectral_snv[, -1]
+#View(dat_wetchem_spectral_snv[1:15,1:15])
+dim(dat_wetchem_spectral_snv)
+dat_wetchem_spectral_snv<-dat_wetchem_spectral_snv%>%dplyr::select(-AnLab_Order,-AnLab_Sample,-SCRI)
+dat_wetchem_spectral_snv<-dat_wetchem_spectral_snv%>%dplyr::select(-Var.22)
+
+```
+
+```{r}
+#Check which samples from each data set did not make it into the merged data set
+setdiff(rownames(dat_wetchem),rownames(dat_wetchem_spectral))
+
+#will have many without wetchem
+#setdiff(rownames(dat_spectral), rownames(dat_wetchem_spectral))
+
+#Remove first column of merged data set, as it is redundant with the second (these two columns were the sample names by which the merging was conducted)
+#dat_wetchem_spectral = dat_wetchem_spectral[,-1] #this seems to be resolved; JMB commented out 6/19/2024
+str(dat_wetchem_spectral[,1:18])
+#dat_wetchem_spectral<-dat_wetchem_spectral%>% select(-"Sample")
+nrow(dat_wetchem_spectral) #98 samples in merged data set #8/25/25 198 samples
+
+#remove columns for 
+dat_wetchem_spectral<-dat_wetchem_spectral%>%dplyr::select(-AnLab_Order,-AnLab_Sample,-SCRI)
+dat_wetchem_spectral<-dat_wetchem_spectral%>%dplyr::select(-Var.22)
+str(dat_wetchem_spectral[,1:18])
+
+```
+
+
+
+Testing pretreatments no pretreat, SNV, SG1, SG2 with 5fCV
+```{r}
+
+# Initialize results vector to store performance metrics
+res_matr2 = matrix(NA,nrow=27,ncol=7) #Traits on columns, metrics on rows: RMSEP (corrected for bias) in each training set, ratio of percent deviation in each training set, r(pred,obs) in 5-fold CV in all samples, RMSEP (corrected for bias) in 8 samples
+colnames(res_matr2) = c(unlist(colnames(dat_wetchem_spectral)[6:12]))
+rownames(res_matr2) = c("Trait mean in all samples",
+                        "Trait SD in all samples",
+                       "r(foss,obs) in all samples",
+                       "RMSEP in 5x CV no pretreatment",
+                       "r(pred,obs) in 5x CV no pretreatment",
+                       "ncomp in 5x CVno pretreatment",
+                       "RMSEP LOO no pretreatment",
+                       "r(pred,obs) in LOO no pretreatment", 
+                       "ncomp in LOO no pretreatment",
+                       "RMSEP in 5x CV in sg1",
+                       "r(pred,obs) in 5x CV in sg1",
+                       "ncomp in 5x CV in sg1",
+                       "RMSEP LOO in sg1",
+                       "r(pred,obs) in LOO sg1",
+                       "ncomp in LOO in sg1",
+                       "RMSEP in 5x CV in sg2",
+                       "r(pred,obs) in 5x CV in sg2",
+                       "ncomp in 5x CV in sg2",
+                       "RMSEP LOO in sg2",
+                       "r(pred,obs) in LOO sg2",
+                       "ncomp in LOO in sg2",
+                       "RMSEP in 5x CV in snv",
+                       "r(pred,obs) in 5x CV in snv",
+                       "ncomp in 5x CV in snv",
+                       "RMSEP LOO in snv",
+                       "r(pred,obs) in LOO in snv",
+                       "ncomp in LOO in snv"
+                       )
+```
+
+```{r}
+res_matr2[3,1]=print(cor(dat_wetchem_spectral$DM_percent, dat_wetchem_spectral$Moisture_foss))
+res_matr2[3,2]=print(cor(dat_wetchem_spectral$Moisture_percent, dat_wetchem_spectral$Moisture_foss))
+res_matr2[3,3]=print(cor(dat_wetchem_spectral$Ash_percent, dat_wetchem_spectral$Ash_foss))
+res_matr2[3,4]=print(cor(dat_wetchem_spectral$TotalN_percent, dat_wetchem_spectral$Protein_foss))
+res_matr2[3,5]=print(cor(dat_wetchem_spectral$Protein_percent, dat_wetchem_spectral$Protein_foss))
+res_matr2[3,6]=print(cor(dat_wetchem_spectral$Fat_percent, dat_wetchem_spectral$Fat_foss))
+
+#res_matr2[3,7]=print(cor(dat_wetchem_spectral$Starch_percent, dat_wetchem_spectral$Strarch_foss))
+
+starch<-dat_wetchem_spectral%>%dplyr::select(Starch_percent,Strarch_foss)%>%na.omit()
+
+res_matr2[3,7]=print(cor(starch$Starch_percent, starch$Strarch_foss))
+
+```
+
+No pretreatment:
+```{r}
+for(i in 6:12){
+  this.trait.name = colnames(dat_wetchem_spectral)[i]
+  print(this.trait.name)
+
+  ## Subset only the trait column of interest (with index i) and all of the spectral data, so that the latter can be fed into plsr as predictors
+  dat_wetchem_spectral_ThisTrait = dat_wetchem_spectral[,c(i,18:ncol(dat_wetchem_spectral))]
+  res_matr2[1,i-5] = mean(dat_wetchem_spectral_ThisTrait[,1],na.rm=T)
+  res_matr2[2,i-5] = sd(dat_wetchem_spectral_ThisTrait[,1],na.rm=T)
+
+  ## Five-fold cross-validation in all samples
+
+  pls_all_5fCV <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp = 20, validation = "CV", segments = 5,data=dat_wetchem_spectral_ThisTrait) 
+  plot(pls_all_5fCV)
+  plot(RMSEP(pls_all_5fCV), legendpos = "topright")
+  summary(pls_all_5fCV)
+  plot(pls_all_5fCV, "loadings", comps = 1:5, legendpos = "topleft", 
+       labels = , xlab = "nm")+ abline(h = 0)
+
+    ncomp.onesigma.all.5fCV <- selectNcomp(pls_all_5fCV, method = "onesigma", plot = TRUE) 
+    res_matr2[6,i-5]=print(ncomp.onesigma.all.5fCV)
+  plot(RMSEP(pls_all_5fCV), legendpos = "topright")
+  summary(pls_all_5fCV)
+  if(ncomp.onesigma.all.5fCV == 0){
+    res_matr2[4,i-5] = NA
+    res_matr2[5,i-5] = NA}
+  else{
+    plot(pls_all_5fCV, ncomp = ncomp.onesigma.all.5fCV, asp = 1, line = TRUE) 
+    res_matr2[4,i-5] = RMSEP(pls_all_5fCV,ncomp=ncomp.onesigma.all.5fCV)$val[[4]]
+    res_matr2[5,i-5] = cor(pls_all_5fCV$validation$pred[,,ncomp.onesigma.all.5fCV],na.omit(dat_wetchem_spectral_ThisTrait[,1]))
+  }
+}  
+```
+
+
+
+
+Sg.1 pretreatment
+```{r}
+ #Test spectral pretreatment sg.1 5fCV
+for(i in 6:12){
+  this.trait.name = colnames(dat_wetchem_spectral_sg.1)[i]
+  print(this.trait.name)
+
+
+  dat_wetchem_spectral_sg.1_ThisTrait = dat_wetchem_spectral_sg.1[,c(i,18:ncol(dat_wetchem_spectral_sg.1))]
+
+  pls_all_5fCV_sg.1 <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp = 20, validation = "CV", segments = 5, data=dat_wetchem_spectral_sg.1_ThisTrait) #note: ncomp = 7 is hard-coded in this case, would be ideal to automate 
+  plot(pls_all_5fCV_sg.1)
+  plot(RMSEP(pls_all_5fCV_sg.1), legendpos = "topright")
+  summary(pls_all_5fCV_sg.1)
+  plot(pls_all_5fCV_sg.1, plottype = "scores", comps = 1:5) 
+  plot(pls_all_5fCV_sg.1, "loadings", comps = 1:5, legendpos = "topright", 
+       labels = , xlab = "nm")+ abline(h = 0)
+   ncomp.onesigma.sg.1.5fCV <- 
+   if(ncomp.onesigma.sg.1.5fCV == 0){
+    res_matr2[10,i-5] = NA
+    res_matr2[11,i-5] = NA}
+  else{
+    plot(pls_all_5fCV_sg.1, ncomp = ncomp.onesigma.sg.1.5fCV, asp = 1, line = TRUE)
+    res_matr2[10,i-5] = RMSEP(pls_all_5fCV_sg.1,ncomp=ncomp.onesigma.sg.1.5fCV)$val[[4]] #11 comp for starch
+    res_matr2[11,i-5] = cor(pls_all_5fCV_sg.1$validation$pred[,,ncomp.onesigma.sg.1.5fCV],na.omit(dat_wetchem_spectral_sg.1_ThisTrait[,1]))
+    }
+}
+```
+
+
+Sg.2 pretreatment
+```{r}
+ #Test spectral pretreatment sg.2
+for(i in 6:12){
+  this.trait.name = colnames(dat_wetchem_spectral_sg.2)[i]
+  print(this.trait.name)
+  dat_wetchem_spectral_sg.2_ThisTrait = dat_wetchem_spectral_sg.2[,c(i,18:ncol(dat_wetchem_spectral_sg.2))]
+
+  pls_all_5fCV_sg.2 <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp = 20, validation = "CV", segments = 5,data=dat_wetchem_spectral_sg.2_ThisTrait) 
+  plot(pls_all_5fCV_sg.2)
+  plot(RMSEP(pls_all_5fCV_sg.2), legendpos = "topright")
+  summary(pls_all_5fCV_sg.2)
+  plot(pls_all_5fCV_sg.2, plottype = "scores", comps = 1:5) 
+  plot(pls_all_5fCV_sg.2, "loadings", comps = 1:5, legendpos = "topright", 
+       labels = , xlab = "nm")+ abline(h = 0)
+   ncomp.onesigma.sg.2.5fCV <- selectNcomp(pls_all_5fCV_sg.2, method = "onesigma", plot = TRUE) 
+   res_matr2[18,i-5] =print(ncomp.onesigma.sg.2.5fCV)
+   if(ncomp.onesigma.sg.2.5fCV == 0){
+    res_matr2[16,i-5] = NA
+    res_matr2[17,i-5] = NA}
+  else{
+    plot(pls_all_5fCV_sg.2, ncomp = ncomp.onesigma.sg.2.5fCV, asp = 1, line = TRUE) 
+    res_matr2[16,i-5] = RMSEP(pls_all_5fCV_sg.2,ncomp=ncomp.onesigma.sg.2.5fCV)$val[[4]]
+    res_matr2[17,i-5] = cor(pls_all_5fCV_sg.2$validation$pred[,,ncomp.onesigma.sg.2.5fCV],na.omit(dat_wetchem_spectral_sg.2_ThisTrait[,1]))
+    }
+}
+```
+
+
+SNV pretreatment:
+```{r}
+#SNV pretreatment 5fCV
+for(i in 6:12){
+  this.trait.name = colnames(dat_wetchem_spectral_snv)[i]
+  print(this.trait.name)
+
+  ## Subset only the trait column of interest (with index i) and all of the spectral data, so that the latter can be fed into plsr as predictors
+  dat_wetchem_spectral_snv_ThisTrait = dat_wetchem_spectral_snv[,c(i,18:ncol(dat_wetchem_spectral_snv))]
+ 
+   ## Five-fold cross-validation in all samples
+
+  ### Establish num_components
+  #code goes here
+
+  pls_all_5fCV_snv <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp = 20, validation = "CV", segments = 5,data=dat_wetchem_spectral_snv_ThisTrait) 
+  plot(pls_all_5fCV_snv)
+  plot(RMSEP(pls_all_5fCV_snv), legendpos = "topright")
+  summary(pls_all_5fCV_snv)
+  plot(pls_all_5fCV_snv, plottype = "scores", comps = 1:5) 
+  plot(pls_all_5fCV_snv, "loadings", comps = 1:5, legendpos = "topright", 
+       labels = , xlab = "nm")+ abline(h = 0)
+   ncomp.onesigma.snv.5fCV <- selectNcomp(pls_all_5fCV_snv, method = "onesigma", plot = TRUE) 
+   res_matr2[24,i-5]= print(ncomp.onesigma.snv.5fCV)
+  if(ncomp.onesigma.snv.5fCV == 0){
+    res_matr2[22,i-5] = NA
+    res_matr2[23,i-5] = NA}
+  else{
+    plot(pls_all_5fCV_snv, ncomp = ncomp.onesigma.snv.5fCV, asp = 1, line = TRUE) 
+    res_matr2[22,i-5] = RMSEP(pls_all_5fCV_snv,ncomp=ncomp.onesigma.snv.5fCV)$val[[4]]
+    res_matr2[23,i-5] = cor(pls_all_5fCV_snv$validation$pred[,,ncomp.onesigma.snv.5fCV],na.omit(dat_wetchem_spectral_snv_ThisTrait[,1]))
+    }
+}
+```
+
+
+```{r}
+#write table
+write.csv(res_matr2, file="/Users/jaadaskaveg/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/model_comp_pretreat_starch_added_1-26-26.csv")
+```
+
+Function to get predicted values 5fCV No pretreatment
+```{r}
+for(i in 6:12){
+  this.trait.name = colnames(dat_wetchem_spectral)[i]
+  print(this.trait.name)
+  dat_wetchem_spectral_ThisTrait = dat_wetchem_spectral[,c(i,18:ncol(dat_wetchem_spectral))]
+  
+#model
+  pls_5fCV <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp=20, data=dat_wetchem_spectral_ThisTrait, validation="CV", segments = 5,)
+  ncomp.onesigma.5fCV <- selectNcomp(pls_5fCV, method = "onesigma", plot = TRUE)
+print(ncomp.onesigma.5fCV)
+
+  print(cor(pls_5fCV$validation$pred[,,ncomp.onesigma.5fCV],na.omit(dat_wetchem_spectral_ThisTrait[,1])))
+
+pred.vals.all[i-5] = as.data.frame(predict(pls_5fCV, ncomp = ncomp.onesigma.5fCV, newdata = dat_spectral))
+ }
+
+```
+
+
+Create dataset with meta data attached
+```{r}
+#meta<-dat_wetchem_spectral[1:8]
+
+pred.vals.all$FossID<-rownames(dat_spectral)
+#pred.vals.all<-rownames_to_column(pred.vals.all,var = "FossID")
+
+#pred.vals.w.meta<-full_join(meta, pred.vals.all, by="FossID")
+#pred.vals.w.meta<-column_to_rownames(pred.vals.w.meta,var = "FossID")
+#foss<-dat_wetchem_spectral[15:18]
+#foss$FossID<-dat_wetchem_spectral$FossID #need to add all foss data for futrue reference (fiber and starch)
+#pred.vals.w.meta<-full_join( pred.vals.w.meta, foss, by="FossID")
+#str(pred.vals.w.meta)
+write.csv(pred.vals.all,"~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/2.4.26_predictedU_5fCV_nopreteat_final6E.csv")
+```
+
+No pretreatment stats (extended metrics) for 8 iterations of the model:
+```{r}
+
+calc_metrics <- function(observed, predicted, coef_det = TRUE) {
+  keep <- is.finite(observed) & is.finite(predicted)
+  obs  <- observed[keep]
+  prd  <- predicted[keep]
+  n    <- length(obs)
+  if (n < 3L) {
+    return(data.frame(
+      r = NA_real_,
+      R2 = NA_real_,
+      RMSECV = NA_real_,
+      bias = NA_real_,
+      slope = NA_real_,
+      intercept = NA_real_,
+      n = n
+    ))
+  }
+
+  ## Check for zero or undefined standard deviations
+  sd_obs <- sd(obs)
+  sd_prd <- sd(prd)
+
+  r      <- cor(obs, prd, method = "pearson")
+  ss_tot <- sum((obs - mean(obs))^2)
+  ss_res <- sum((obs - prd)^2)
+  data.frame(
+    r      = r,
+    R2     = if (coef_det) 1 - ss_res / ss_tot else r^2,
+    RMSECV = sqrt(mean((obs - prd)^2)),
+    bias   = mean(prd - obs),
+    slope  = unname(coef(lm(prd ~ obs))[2]),
+    n      = n
+  )
+}
+
+validation_results <- list()
+residual_plot_data <- data.frame()
+ncomp_selected= c(Moisture_percent= 10,
+                  Ash_percent=12,
+                  TotalN_percent=12,
+                  Protein_percent=18,
+                  Fat_percent=17,
+                  Starch_percent=12)
+
+# Run the analysis 8 times
+for (iteration in 1:8) {
+  
+  print(paste("Iteration:", iteration))
+  
+  set.seed(100 + iteration)
+  for(i in 7:12){
+    this.trait.name = colnames(dat_wetchem_spectral)[i]
+    print(this.trait.name)
+    
+    ## Subset only the trait column of interest (with index i) and all of the spectral data, so that the latter can be fed into plsr as predictors
+    dat_wetchem_spectral_ThisTrait = dat_wetchem_spectral[,c(i,18:ncol(dat_wetchem_spectral))]
+    
+    ## Five-fold cross-validation in all samples
+    ncomp<-ncomp_selected[this.trait.name]
+    pls_all_5fCV <- plsr(as.formula(paste(this.trait.name, "~ .")), ncomp = ncomp,
+                         validation = "CV", segments = 5,data=dat_wetchem_spectral_ThisTrait) 
+    plot(pls_all_5fCV)
+    
+    summary(pls_all_5fCV)
+   
+    ## Extract FIVE-FOLD OUT-OF-FOLD predictions
+    predicted <-as.vector(pls_all_5fCV$validation$pred[,,ncomp]) 
+    
+    ## Observed wet chemistry values
+    observed <-dat_wetchem_spectral_ThisTrait[,1]
+    keep_observed <- is.finite(observed)
+    
+    observed <- observed[keep_observed]
+    
+    ## Calculate validation statistics
+    metrics <-calc_metrics(observed = observed,predicted = predicted)
+    
+    
+    ## Add trait and number of components
+    metrics$Trait <- this.trait.name
+    metrics$ncomp <- ncomp
+    metrics$Iteration <- iteration
+    
+    ## Store
+    validation_results[[paste(this.trait.name, iteration, sep = "_")]] <- metrics
+    
+    ## Print
+    print(metrics)
+}
+}
+
+## Combine all nutrients
+validation_results_df <-do.call(rbind, validation_results)
+
+rownames(validation_results_df) <- NULL
+
+## View final table
+print(validation_results_df, digits = 3)
+```
+
+Save Validation statistics results
+```{r}
+
+## Save table
+write.csv(validation_results_df, "~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/NIRS_CV_validation_final_statistics09.13.26.csv", row.names = FALSE)
+
+write.csv(residual_plot_data, "~/Library/CloudStorage/Box-Box/PostDoc/LIMA_USDA_SCRI/NIRS_Calibration/NIRS_CV_residual_plot_data.csv", row.names = FALSE)
+
+```
